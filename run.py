@@ -7,6 +7,7 @@ import PIL
 import PIL.Image
 import sys
 import torch
+from torchvision.utils import save_image
 
 try:
     from .correlation import correlation # the custom cost volume layer
@@ -288,8 +289,8 @@ def estimate(tenOne, tenTwo):
     intWidth = tenOne.shape[2]
     intHeight = tenOne.shape[1]
 
-    assert(intWidth == 1024) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
-    assert(intHeight == 436) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
+    # assert(intWidth == 1024) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
+    # assert(intHeight == 436) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
 
     tenPreprocessedOne = tenOne.cuda().view(1, 3, intHeight, intWidth)
     tenPreprocessedTwo = tenTwo.cuda().view(1, 3, intHeight, intWidth)
@@ -310,11 +311,38 @@ def estimate(tenOne, tenTwo):
 
 ##########################################################
 
+def predict_image(img: torch.Tensor, flow_img: torch.Tensor) -> torch.Tensor:
+    # 需要双线性插值
+    _, height, width = img.shape
+    xx, yy = torch.meshgrid(torch.arange(width), torch.arange(height), indexing = 'xy')
+    coords = torch.stack((xx, yy), dim = 0).float()
+    coords -= flow_img
+    coords[0, ...] = torch.maximum(coords[0, ...], torch.zeros(1, height, width))
+    coords[0, ...] = torch.minimum(coords[0, ...], torch.full((1, height, width), width))
+
+    coords[1, ...] = torch.maximum(coords[1, ...], torch.zeros(1, height, width))
+    coords[1, ...] = torch.minimum(coords[1, ...], torch.full((1, height, width), height))
+    coords = (coords / torch.FloatTensor([width, height]).view(2, 1, 1) - 0.5) * 2.0
+    result = torch.nn.functional.grid_sample(img.unsqueeze(0), coords.permute(1, 2, 0).unsqueeze(0)).squeeze()
+    result = torch.flip(result, dims = [0])
+    return result
+
 if __name__ == '__main__':
     tenOne = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strOne))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
     tenTwo = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strTwo))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
 
     tenOutput = estimate(tenOne, tenTwo)
+    _, height, width = tenOutput.shape
+    predicted = predict_image(tenOne, tenOutput)
+
+    min_output = tenOutput.min()
+    max_output = tenOutput.max()
+    tenOutput = (tenOutput - min_output) / (max_output - min_output)
+
+    image = torch.cat([tenOutput, torch.ones(1, height, width)], dim = 0)
+
+    
+    save_image([predicted, image], "./output.png", nrow = 1)
 
     objOutput = open(arguments_strOut, 'wb')
 
